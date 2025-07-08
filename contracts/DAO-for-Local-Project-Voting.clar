@@ -12,6 +12,13 @@
 (define-constant ERR_INVALID_DURATION (err u110))
 (define-constant ERR_INVALID_AMOUNT (err u111))
 
+(define-map member-participation-score principal uint)
+(define-map member-last-vote-block principal uint)
+(define-map member-total-contributions principal uint)
+(define-data-var participation-bonus-multiplier uint u2)
+(define-data-var contribution-power-ratio uint u100000)
+(define-data-var decay-blocks uint u1000)
+
 (define-data-var next-proposal-id uint u1)
 (define-data-var total-members uint u0)
 (define-data-var quorum-percentage uint u51)
@@ -110,7 +117,8 @@
                 (merge proposal {no-votes: (+ (get no-votes proposal) voting-power)}))
         )
         
-        (ok true)
+        (let ((result (update-voting-power-on-vote tx-sender)))
+            (ok true))
     )
 )
 
@@ -221,4 +229,89 @@
     (map-set members CONTRACT_OWNER true)
     (map-set member-voting-power CONTRACT_OWNER u1)
     (var-set total-members u1)
+)
+
+
+(define-public (update-voting-power-on-vote (member principal))
+    (let
+        (
+            (current-score (default-to u0 (map-get? member-participation-score member)))
+            (last-vote-block (default-to u0 (map-get? member-last-vote-block member)))
+            (blocks-since-last-vote (- stacks-block-height last-vote-block))
+            (decay-factor (if (> blocks-since-last-vote (var-get decay-blocks)) u1 u0))
+            (new-score (+ current-score u1))
+            (participation-bonus (/ new-score (var-get participation-bonus-multiplier)))
+            (contribution-power (/ (get-member-contributions member) (var-get contribution-power-ratio)))
+            (decayed-power (if (> decay-factor u0) u1 (get-voting-power member)))
+            (new-power (+ u1 participation-bonus contribution-power))
+        )
+        (map-set member-participation-score member new-score)
+        (map-set member-last-vote-block member stacks-block-height)
+        (map-set member-voting-power member (if (> decayed-power new-power) decayed-power new-power))
+        (ok true)
+    )
+)
+
+(define-public (contribute-to-dao (amount uint))
+    (let
+        (
+            (current-contributions (get-member-contributions tx-sender))
+        )
+        (asserts! (is-member tx-sender) ERR_INVALID_MEMBER)
+        (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+        (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+        
+        (map-set member-total-contributions tx-sender (+ current-contributions amount))
+        (let ((result (update-voting-power-on-contribution tx-sender)))
+            true)
+        (ok true)
+    )
+)
+
+(define-private (update-voting-power-on-contribution (member principal))
+    (let
+        (
+            (current-power (get-voting-power member))
+            (contribution-power (/ (get-member-contributions member) (var-get contribution-power-ratio)))
+            (participation-bonus (/ (get-member-participation member) (var-get participation-bonus-multiplier)))
+            (new-power (+ u1 participation-bonus contribution-power))
+        )
+        (map-set member-voting-power member new-power)
+        (ok true)
+    )
+)
+
+(define-public (set-participation-multiplier (new-multiplier uint))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+        (asserts! (> new-multiplier u0) ERR_INVALID_AMOUNT)
+        (var-set participation-bonus-multiplier new-multiplier)
+        (ok true)
+    )
+)
+
+(define-public (set-contribution-ratio (new-ratio uint))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+        (asserts! (> new-ratio u0) ERR_INVALID_AMOUNT)
+        (var-set contribution-power-ratio new-ratio)
+        (ok true)
+    )
+)
+
+(define-read-only (get-member-participation (member principal))
+    (default-to u0 (map-get? member-participation-score member))
+)
+
+(define-read-only (get-member-contributions (member principal))
+    (default-to u0 (map-get? member-total-contributions member))
+)
+
+(define-read-only (get-member-voting-metrics (member principal))
+    (ok {
+        voting-power: (get-voting-power member),
+        participation-score: (get-member-participation member),
+        total-contributions: (get-member-contributions member),
+        last-vote-block: (default-to u0 (map-get? member-last-vote-block member))
+    })
 )
