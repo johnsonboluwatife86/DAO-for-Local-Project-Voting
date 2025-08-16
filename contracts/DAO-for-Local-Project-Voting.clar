@@ -26,6 +26,13 @@
 (define-map members principal bool)
 (define-map member-voting-power principal uint)
 
+(define-constant ERR_CANNOT_DELEGATE_TO_SELF (err u113))
+(define-constant ERR_DELEGATE_NOT_MEMBER (err u114))
+(define-constant ERR_NOT_DELEGATED (err u115))
+
+(define-map member-delegates principal principal)
+(define-map delegated-power principal uint)
+
 (define-map proposals uint {
     proposer: principal,
     title: (string-ascii 100),
@@ -314,4 +321,78 @@
         total-contributions: (get-member-contributions member),
         last-vote-block: (default-to u0 (map-get? member-last-vote-block member))
     })
+)
+
+
+(define-public (delegate-vote (delegate principal))
+    (let
+        (
+            (delegator-power (get-voting-power tx-sender))
+        )
+        (asserts! (is-member tx-sender) ERR_INVALID_MEMBER)
+        (asserts! (is-member delegate) ERR_DELEGATE_NOT_MEMBER)
+        (asserts! (not (is-eq tx-sender delegate)) ERR_CANNOT_DELEGATE_TO_SELF)
+        
+        (match (map-get? member-delegates tx-sender)
+            old-delegate
+                (map-set delegated-power old-delegate 
+                    (- (default-to u0 (map-get? delegated-power old-delegate)) delegator-power))
+            true
+        )
+        
+        (map-set member-delegates tx-sender delegate)
+        (map-set delegated-power delegate 
+            (+ (default-to u0 (map-get? delegated-power delegate)) delegator-power))
+        (ok true)
+    )
+)
+
+(define-public (revoke-delegation)
+    (let
+        (
+            (current-delegate (unwrap! (map-get? member-delegates tx-sender) ERR_NOT_DELEGATED))
+            (delegator-power (get-voting-power tx-sender))
+        )
+        (map-set delegated-power current-delegate 
+            (- (default-to u0 (map-get? delegated-power current-delegate)) delegator-power))
+        (map-delete member-delegates tx-sender)
+        (ok true)
+    )
+)
+
+(define-public (vote-as-delegate (proposal-id uint) (support bool) (delegator principal))
+    (let
+        (
+            (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+            (delegate (unwrap! (map-get? member-delegates delegator) ERR_NOT_DELEGATED))
+            (vote-key {proposal-id: proposal-id, voter: delegator})
+            (delegator-power (get-voting-power delegator))
+        )
+        (asserts! (is-eq tx-sender delegate) ERR_UNAUTHORIZED)
+        (asserts! (is-member delegator) ERR_INVALID_MEMBER)
+        (asserts! (<= stacks-block-height (get end-block proposal)) ERR_VOTING_PERIOD_ENDED)
+        (asserts! (is-none (map-get? votes vote-key)) ERR_ALREADY_VOTED)
+        
+        (map-set votes vote-key support)
+        
+        (if support
+            (map-set proposals proposal-id 
+                (merge proposal {yes-votes: (+ (get yes-votes proposal) delegator-power)}))
+            (map-set proposals proposal-id 
+                (merge proposal {no-votes: (+ (get no-votes proposal) delegator-power)}))
+        )
+        (ok true)
+    )
+)
+
+(define-read-only (get-delegate (member principal))
+    (map-get? member-delegates member)
+)
+
+(define-read-only (get-total-delegated-power (delegate principal))
+    (default-to u0 (map-get? delegated-power delegate))
+)
+
+(define-read-only (get-effective-voting-power (member principal))
+    (+ (get-voting-power member) (get-total-delegated-power member))
 )
