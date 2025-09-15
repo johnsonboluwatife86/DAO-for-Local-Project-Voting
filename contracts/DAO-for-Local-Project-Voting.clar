@@ -30,6 +30,16 @@
 (define-constant ERR_DELEGATE_NOT_MEMBER (err u114))
 (define-constant ERR_NOT_DELEGATED (err u115))
 
+(define-constant ERR_DAO_FROZEN (err u116))
+(define-constant ERR_ALREADY_VOTED_EMERGENCY (err u117))
+(define-constant ERR_INSUFFICIENT_EMERGENCY_VOTES (err u118))
+
+(define-data-var is-emergency-frozen bool false)
+(define-data-var emergency-freeze-threshold uint u3)
+(define-data-var freeze-proposal-id uint u0)
+(define-data-var current-freeze-votes uint u0)
+(define-data-var current-unfreeze-votes uint u0)
+
 (define-map member-delegates principal principal)
 (define-map delegated-power principal uint)
 
@@ -395,4 +405,77 @@
 
 (define-read-only (get-effective-voting-power (member principal))
     (+ (get-voting-power member) (get-total-delegated-power member))
+)
+
+
+(define-map emergency-freeze-votes {proposal-type: (string-ascii 10), voter: principal} bool)
+
+(define-public (emergency-freeze-vote (support bool))
+    (let
+        (
+            (vote-key {proposal-type: "freeze", voter: tx-sender})
+            (current-freeze (var-get current-freeze-votes))
+            (current-unfreeze (var-get current-unfreeze-votes))
+        )
+        (asserts! (is-member tx-sender) ERR_INVALID_MEMBER)
+        (asserts! (is-none (map-get? emergency-freeze-votes vote-key)) ERR_ALREADY_VOTED_EMERGENCY)
+        
+        (map-set emergency-freeze-votes vote-key support)
+        
+        (if support
+            (var-set current-freeze-votes (+ current-freeze u1))
+            (var-set current-unfreeze-votes (+ current-unfreeze u1))
+        )
+        
+        (let
+            (
+                (freeze-threshold (var-get emergency-freeze-threshold))
+                (new-freeze-count (var-get current-freeze-votes))
+                (new-unfreeze-count (var-get current-unfreeze-votes))
+            )
+            (if (and support (>= new-freeze-count freeze-threshold) (not (var-get is-emergency-frozen)))
+                (begin
+                    (var-set is-emergency-frozen true)
+                    (var-set freeze-proposal-id (+ (var-get freeze-proposal-id) u1))
+                    (clear-emergency-votes)
+                    (ok "DAO_FROZEN"))
+                (if (and (not support) (>= new-unfreeze-count freeze-threshold) (var-get is-emergency-frozen))
+                    (begin
+                        (var-set is-emergency-frozen false)
+                        (clear-emergency-votes)
+                        (ok "DAO_UNFROZEN"))
+                    (ok "VOTE_RECORDED")))
+        )
+    )
+)
+
+(define-private (clear-emergency-votes)
+    (begin
+        (var-set current-freeze-votes u0)
+        (var-set current-unfreeze-votes u0)
+        true
+    )
+)
+
+(define-read-only (is-dao-frozen)
+    (var-get is-emergency-frozen)
+)
+
+(define-read-only (get-emergency-status)
+    (ok {
+        frozen: (var-get is-emergency-frozen),
+        freeze-votes: (var-get current-freeze-votes),
+        unfreeze-votes: (var-get current-unfreeze-votes),
+        threshold: (var-get emergency-freeze-threshold),
+        freeze-id: (var-get freeze-proposal-id)
+    })
+)
+
+(define-public (set-emergency-threshold (new-threshold uint))
+    (begin
+        (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_UNAUTHORIZED)
+        (asserts! (and (> new-threshold u0) (<= new-threshold (var-get total-members))) ERR_INVALID_AMOUNT)
+        (var-set emergency-freeze-threshold new-threshold)
+        (ok true)
+    )
 )
