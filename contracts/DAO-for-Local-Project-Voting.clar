@@ -34,6 +34,10 @@
 (define-constant ERR_ALREADY_VOTED_EMERGENCY (err u117))
 (define-constant ERR_INSUFFICIENT_EMERGENCY_VOTES (err u118))
 
+(define-constant ERR_PROPOSAL_HAS_VOTES (err u119))
+(define-constant ERR_NOT_PROPOSER (err u120))
+(define-constant ERR_AMENDMENT_LOCKED (err u121))
+
 (define-data-var is-emergency-frozen bool false)
 (define-data-var emergency-freeze-threshold uint u3)
 (define-data-var freeze-proposal-id uint u0)
@@ -478,4 +482,78 @@
         (var-set emergency-freeze-threshold new-threshold)
         (ok true)
     )
+)
+
+
+(define-map proposal-amendments uint {
+    amendment-count: uint,
+    last-amended-block: uint,
+    original-title: (string-ascii 100),
+    original-funding: uint
+})
+
+(define-map proposal-amendment-history {proposal-id: uint, version: uint} {
+    title: (string-ascii 100),
+    description: (string-ascii 500),
+    funding-amount: uint,
+    amended-at-block: uint
+})
+
+(define-public (amend-proposal 
+    (proposal-id uint) 
+    (new-title (string-ascii 100)) 
+    (new-description (string-ascii 500)) 
+    (new-funding-amount uint))
+    (let
+        (
+            (proposal (unwrap! (map-get? proposals proposal-id) ERR_PROPOSAL_NOT_FOUND))
+            (has-votes (> (+ (get yes-votes proposal) (get no-votes proposal)) u0))
+            (current-amendments (default-to {amendment-count: u0, last-amended-block: u0, 
+                original-title: (get title proposal), original-funding: (get funding-amount proposal)} 
+                (map-get? proposal-amendments proposal-id)))
+        )
+        (asserts! (is-eq tx-sender (get proposer proposal)) ERR_NOT_PROPOSER)
+        (asserts! (not has-votes) ERR_PROPOSAL_HAS_VOTES)
+        (asserts! (> new-funding-amount u0) ERR_INVALID_AMOUNT)
+        (asserts! (<= new-funding-amount (stx-get-balance (as-contract tx-sender))) ERR_INSUFFICIENT_FUNDS)
+        
+        (if (is-eq (get amendment-count current-amendments) u0)
+            (map-set proposal-amendments proposal-id {
+                amendment-count: u1,
+                last-amended-block: stacks-block-height,
+                original-title: (get title proposal),
+                original-funding: (get funding-amount proposal)
+            })
+            (map-set proposal-amendments proposal-id (merge current-amendments {
+                amendment-count: (+ (get amendment-count current-amendments) u1),
+                last-amended-block: stacks-block-height
+            }))
+        )
+        
+        (map-set proposal-amendment-history 
+            {proposal-id: proposal-id, version: (+ (get amendment-count current-amendments) u1)}
+            {
+                title: new-title,
+                description: new-description,
+                funding-amount: new-funding-amount,
+                amended-at-block: stacks-block-height
+            }
+        )
+        
+        (map-set proposals proposal-id (merge proposal {
+            title: new-title,
+            description: new-description,
+            funding-amount: new-funding-amount
+        }))
+        
+        (ok (+ (get amendment-count current-amendments) u1))
+    )
+)
+
+(define-read-only (get-amendment-info (proposal-id uint))
+    (ok (map-get? proposal-amendments proposal-id))
+)
+
+(define-read-only (get-amendment-version (proposal-id uint) (version uint))
+    (ok (map-get? proposal-amendment-history {proposal-id: proposal-id, version: version}))
 )
