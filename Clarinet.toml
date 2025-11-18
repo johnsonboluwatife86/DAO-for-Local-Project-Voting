@@ -9,6 +9,10 @@ requirements = []
 path = 'contracts/DAO-for-Local-Project-Voting.clar'
 clarity_version = 3
 epoch = 3.1
+[contracts.milestone-funding]
+path = 'contracts/milestone-funding.clar'
+clarity_version = 3
+epoch = 3.1
 [repl.analysis]
 passes = ['check_checker']
 
